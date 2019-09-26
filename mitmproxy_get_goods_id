@@ -1,0 +1,171 @@
+import json
+import os
+import random
+import re
+import time
+import mitmproxy.http
+import pyautogui
+from pymongo import MongoClient
+
+START_PRICE = 0.10  # 开始价格
+INTERVICE_PRICE = 10.00  # 价格步长
+END_PRICE = 200.10  # 结束价格
+BASE_DIR = '20190828'  # 保存json的文件夹
+SLEEP_TIME = 12000  # 休眠时间
+
+t5 = f'''
+<script>
+    function main(){{
+        var start_price = document.querySelector('#J_relative > div.sort-row > div > div.prices > div.inputs.J_LaterHover > div > ul > li:nth-child(1) > input').value;
+        var next_price = document.querySelector("#J_relative .prices .J_LaterHover .g-clearfix li:nth-child(3)  input").value;
+        var interval_price = {INTERVICE_PRICE};  // 递增价格
+        var end_price = {END_PRICE};  // 结束价格
+        if (start_price == '' && next_price == ''){{
+            start_price = {START_PRICE};  // 初始价格     
+            next_price = start_price + interval_price;
+            console.log(start_price);
+            console.log(start_price);
+            document.querySelector('#J_relative > div.sort-row > div > div.prices > div.inputs.J_LaterHover > div > ul > li:nth-child(1) > input').value = start_price;
+            document.querySelector("#J_relative .prices .J_LaterHover .g-clearfix li:nth-child(3)  input").value = next_price;
+            document.querySelector('.J_SortbarPriceSubmit.btn').click();      
+        }}else{{         
+            start_price = parseFloat(start_price);
+            next_price = parseFloat(next_price);
+            console.log(start_price);
+        }}
+
+        function fanye2(){{
+            console.log('准备翻页');
+            var page_str = document.querySelector('#J_relative > div.sort-row > div > div.pager > ul > li:nth-child(2)').innerText;
+            var current_page = parseInt(page_str.split('/')[0]);
+            var total_page = parseInt(page_str.split('/')[1]);
+            var yanzhengma_flag = document.querySelector(".sufei-tb-dialog.sufei-tb-overlay"); // 是否有验证码
+            var yanzhengma_hide_flag = document.querySelector(".sufei-tb-dialog-hidden.sufei-tb-overlay-hidden");  //验证码隐藏
+            var next_page_button = document.querySelector('#mainsrp-pager > div > div > div > ul > li.item.next > a > span:nth-child(1)');
+
+            if ((!yanzhengma_flag || !!yanzhengma_hide_flag)){{
+                if (current_page < total_page){{ // 可以换页的逻辑
+                    next_page_button.click();
+                    console.log(current_page,total_page);
+                    setTimeout(fanye2, Math.floor(Math.random()*10000+15000));
+                }}else{{  //已到最后一页
+                    //拿到下一个价格段，然后跳转
+                    console.log("---------------page-done------------------");
+                    if ((start_price + interval_price) < end_price){{
+                        console.log(start_price);
+                        start_price = start_price + interval_price;
+                        next_price = next_price + interval_price;
+                        var next_url = 'https://s.taobao.com/search?spm=a230r.1.1998181369.3.4a15173bHvlypW&q=%E6%98%BE%E5%8D%A1&imgfile=&commend=all&ssid=s5-e&search_type=item&sourceId=tb.index&ie=utf8&initiative_id=tbindexz_20170306&tab=old&sort=total-asc&bcoffset=0&p4ppushleft=%2C44&filter=reserve_price%5B'+ start_price + '%2C' + next_price + '%5D';
+                        setTimeout(function fanye2(){{window.location.href = next_url}},Math.floor(Math.random()*4000+8000));
+                        }}else{{
+                            console.log('当前所有价格段都已爬取完成');
+                    }}
+
+                    console.log('-------------------end------------------');
+                }}
+            }}else{{
+                 console.log("需要验证");  // do nothing, just exit!
+            }}
+
+        }}
+        setTimeout(fanye2, 10000);
+    }}
+    setTimeout(main, 10000);
+</script>'''
+
+
+class Step_1(object):
+    def response(self, flow: mitmproxy.http.HTTPFlow):
+        base_dir = f"output/{BASE_DIR}"  # 保存json文件的文件夹
+
+        user = "swadbadmin"
+        pwd = "sandalwood20190506!"
+        host = "52.82.94.233"
+        port = "27017"
+        db_name = "admin"
+        uri = "mongodb://%s:%s@%s" % (user, pwd, host + ":" + port + "/" + db_name)
+        client = MongoClient(uri)  # 连接mongodb服务器
+        # client = MongoClient(host='127.0.0.1', port=27017)  # 连接mongodb
+        db = client.xianka  # 选取数据库
+
+        if not os.path.exists(base_dir):  # 如果不存在这个目录，则创建
+            os.makedirs(base_dir)
+        if ('https://s.taobao.com/search?' in flow.request.url) and ('ajax=true' not in flow.request.url):
+            current_page = re.findall('"currentPage":(\d+)', str(flow.response.text))[0]
+            fileName = f'{base_dir}/{START_PRICE}-{END_PRICE}_page{current_page}.json'
+            print(fileName)
+
+            begin = str(flow.response.text).find('g_page_config = ')
+            end = str(flow.response.text).find(
+                'g_srp_loadCss();')
+            level1_json_str = str(flow.response.text)[begin + len('g_page_config ='):end]
+            level1_json = level1_json_str.rstrip().lstrip()[:-1]
+            level1_json_obj = json.loads(level1_json, encoding="utf-8")
+            with open(fileName, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(level1_json_obj))
+            item = level1_json_obj['mods']['itemlist']['data']['auctions']
+            ids_list = [i['nid'] for i in item]
+            # print(ids_list)
+            for i in ids_list:
+                try:
+                    id_dict = {"id": i, "status": "todo"}
+                    if db.ids.find({"id": i}).count() == 0:
+                        db.ids.insert_one(id_dict)
+                        # print("insert_done")
+                    else:
+                        db.ids.remove({"id": i})
+                        db.ids.insert_one(id_dict)
+                        # print("insert_done")
+                except:
+                    continue
+            print("insert_done")
+            flow.response.text = flow.response.text + t5
+            print('注入成功')
+        # ajax请求的数据
+        elif ('https://s.taobao.com/search?' in flow.request.url) and ('ajax=true' in flow.request.url):
+            print("-----------------------1--------------------------------")
+            start_price = re.findall('%5B(\d+\.\d+)%2C', flow.request.url)[0]
+            end_price = re.findall('%2C(\d+\.\d+)%5D', flow.request.url)[0]
+            current_page = re.findall('"currentPage":(\d+)', str(flow.response.text))[0]
+
+            fileName = f'{base_dir}/{start_price}-{end_price}_page{current_page}.json'
+
+            begin = str(flow.response.text).find('(')
+            end = str(flow.response.text).find('}});')
+            level1_json_str = str(flow.response.text)[begin + len('('):end]
+            level1_json_str = level1_json_str + "}}"
+
+            list = os.listdir(base_dir)  # 获取数据目录下的文件名
+            list = [f"{base_dir}/{i}" for i in list]
+            if fileName in list:
+                pass
+            else:
+                print(fileName)
+                level1_json_obj = json.loads(level1_json_str, encoding="utf-8")
+                with open(fileName, 'w', encoding='utf-8') as f:
+                    f.write(json.dumps(level1_json_obj))
+                item = level1_json_obj['mods']['itemlist']['data']['auctions']
+                ids_list = [i['nid'] for i in item]
+                # print(ids_list)
+                # other_list = []
+                for i in ids_list:
+                    try:
+                        id_dict = {"id": i, "status": "todo"}
+                        if db.ids.find({"id": i}).count() == 0:
+                            # print('1')
+                            db.ids.insert_one(id_dict)
+                            # print('2')
+                        else:
+                            db.ids.delete_many({"id": i})
+                            db.ids.insert_one(id_dict)
+                        # print("------------------insert------------------------")
+                    except Exception as e:
+                        print(e)
+                        continue
+
+            print("------------------insert------------------------")
+
+
+addons = [
+    Step_1()
+]
