@@ -1,0 +1,37 @@
+import datetime
+import time
+
+import pandas as pd
+from pymongo import *
+
+
+def get_connect():
+    '''
+    连接远程mongodb，返回data表里的数据
+    :return:
+    '''
+    user = "swadbadmin"
+    pwd = "sandalwood20190506!"
+    host = "52.82.94.233"
+    port = "27017"
+    db_name = "admin"
+    uri = "mongodb://%s:%s@%s" % (user, pwd, host + ":" + port + "/" + db_name)
+    client = MongoClient(uri)  # 连接mongodb服务器
+    # client = MongoClient(host='localhost', port=27017)
+    # client = MongoClient(host='52.83.244.2', port=27017)  # 连接mongodb
+    db = client.xianka
+    data = db.data  # 用于存放爬取数据的表
+    ids = db.ids  # 用于存放待爬id的表
+    all_data = db.all_data  # 用于数据持久化的表
+    return data, ids, all_data
+
+
+if __name__ == '__main__':
+    TIME = str(
+        (datetime.datetime.today() - datetime.timedelta(days=time.localtime().tm_wday + 1)).strftime("%Y-%m-%d"))
+    data, ids, all_data = get_connect()
+    l = []  # 用于存放从data里取来的数据
+    for i in data.find({'collection_date': TIME}, {'_id': 0}):
+        l.append(i)
+    print(l[:5])
+    all_data.insert_many(l)  # 存入all_data数据库，作为持久化
