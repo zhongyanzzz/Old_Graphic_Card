@@ -1,0 +1,62 @@
+import re
+import pandas as pd
+from pymongo import *
+import time,datetime
+
+def get_data(date):
+    '''
+    连接远程mongodb，返回data表里的数据
+    :return:
+    '''
+    user = "swadbadmin"
+    pwd = "sandalwood20190506!"
+    host = "52.82.94.233"
+    port = "27017"
+    db_name = "admin"
+    uri = "mongodb://%s:%s@%s" % (user, pwd, host + ":" + port + "/" + db_name)
+    client = MongoClient(uri)  # 连接mongodb服务器
+    # client = MongoClient(host='localhost', port=27017)
+    # client = MongoClient(host='52.83.244.2', port=27017)  # 连接mongodb
+    db = client.xianka
+    data = []  #用于存放爬取数据
+    for i in db.data.find({'collection_date':date}):
+        data.append(i)
+    return data
+
+
+def get_info_from_attribute(words, j):
+    '''
+    根据words里的关键词去获取所需的信息
+    :param words:
+    :param j:
+    :return:
+    '''
+    for i in words:
+        if i in j.keys():
+            return j[i]
+        else:
+            continue
+    return ''
+
+
+if __name__ == '__main__':
+    TIME = str((datetime.datetime.today() - datetime.timedelta(days=time.localtime().tm_wday + 1)).strftime("%Y-%m-%d"))
+    time = re.sub("[-]","",TIME)
+    data = get_data(TIME)
+    df = pd.DataFrame(data)
+    # print(df[['id']].values())
+    attribute = data[33]['attribute']
+    df['brand'] = df['attribute'].map(lambda x: get_info_from_attribute(['品牌'], x))
+    df['chip'] = df['attribute'].map(lambda x: get_info_from_attribute(['芯片'], x))
+    df['chip_model'] = df['attribute'].map(lambda x: get_info_from_attribute(['显卡芯片型号', 'NVIDIA芯片型号', '显卡芯片组'], x))
+    df['used_status'] = df['attribute'].map(lambda x: get_info_from_attribute(['成色'], x))
+    df['memory_type'] = df['attribute'].map(lambda x: get_info_from_attribute(['显存类型'], x))
+    df['memory_bandwidth'] = df['attribute'].map(lambda x: get_info_from_attribute(['显存位宽'], x))
+    df['memory_capacity'] = df['attribute'].map(lambda x: get_info_from_attribute(['显存容量', '容量'], x))
+    del df['attribute']
+    df = df[['commentNum', 'confirmGoodsCount', 'id',
+             'price', 'soldTotalCount', 'title', 'brand', 'chip', 'chip_model',
+             'used_status', 'memory_type', 'memory_bandwidth', 'memory_capacity', 'collection_date']]
+    df.to_csv(f'graphicsCard_upto{time}.csv', index=0,encoding="utf-8")   #数据输出到all.csv文件
+
+
