@@ -1,0 +1,260 @@
+# coding = <utf-8>
+'''
+操作：根据需要输入组数GROUPNUM，组序GROUPINDEX，输入自己的cookies
+
+实现功能：
+1，从mongodb远程服务器取出id和status
+2，把所有的id（先去重，防止每个人分配的不均）根据分组数和需要爬的组序划分，选择需要爬取的部分
+3，将属于自己要爬的id与status为done和miss的id做差，得到的是需要爬取的id
+4，对每个id进行爬取，根据爬取的结果对ids和data做更新
+5，如果cookies失效了，语音提示，需要手动关闭程序，然后更换cookies
+'''
+import ast
+import datetime
+import json
+import random
+import re
+import time
+import requests
+from pymongo import *
+from user_agent import USER_AGENTS
+import redis
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+pool = redis.ConnectionPool(host='52.83.247.229', port=6379, decode_responses=True, password="sandalwood20190412!")
+redis_pool = redis.Redis(connection_pool=pool)
+
+def send_email():
+    global COOKIES
+    # 设置smtplib所需的参数
+    # 下面的发件人，收件人是用于邮件传输的。
+    smtpserver = 'smtp.zoho.com'
+    username = "jon.zeng@sandalwoodadvisors.com"
+    password = "ASD199408196219!a"
+    sender = "jon.zeng@sandalwoodadvisors.com"
+    # 收件人为多个收件人
+    receiver = ["jon.zeng@sandalwoodadvisors.com"]
+    subject = "error_file"
+
+    # 下面的主题，发件人，收件人，是显示在邮件页面上的。
+    msg = MIMEMultipart('mixed')
+    msg['Subject'] = subject
+    msg['From'] = sender
+    # 收件人为多个收件人,通过join将列表转换为以;为间隔的字符串
+    msg['To'] = ";".join(receiver)
+
+    # 邮件正文内容
+    try:
+        main_body = f"需要验证并重新输入cookies:{COOKIES}"
+    except:
+        main_body = None
+
+    # 发送邮件
+    if main_body is not None:
+        msg.attach(MIMEText(main_body, 'plain', 'utf-8'))
+        try:
+            smtp = smtplib.SMTP_SSL(smtpserver, 465)
+            smtp.login(username, password)
+            smtp.sendmail(sender, receiver, msg.as_string())
+            smtp.quit()
+            print("邮件发送成功")
+        except:
+            print("邮件发送失败")
+    else:
+        print("没有内容,不需要发送邮件")
+    time.sleep(60)
+    COOKIES = get_cookies_from_redis()
+    return COOKIES
+
+
+def get_connect():
+    '''
+    连接远程mongodb，返回三张表的对象
+    :return:
+    '''
+    user = "swadbadmin"
+    pwd = "sandalwood20190506!"
+    host = "52.82.94.233"
+    port = "27017"
+    db_name = "admin"
+    uri = "mongodb://%s:%s@%s" % (user, pwd, host + ":" + port + "/" + db_name)
+    client = MongoClient(uri)  # 连接mongodb服务器
+    # client = MongoClient(host='localhost', port=27017)
+    # client = MongoClient(host='52.83.244.2', port=27017)  # 连接mongodb
+    db = client.xianka
+    data = db.data  # 用于存放爬取数据的表
+    ids = db.ids  # 用于存放待爬id的表
+    return db, data, ids
+
+
+def get_cookies_from_redis():
+    cookies = redis_pool.srandmember("taobao_cookie")
+    return cookies
+
+
+def save_ids(id, fileName):
+    with open(fileName, 'w', encoding='utf-8') as f:
+        for i in id:
+            f.write(f"{i}\n")
+    print(f"id 已保存到{fileName}")
+
+
+def crawl(id):
+    url = f'https://h5.m.taobao.com/awp/core/detail.htm?id={id}'
+    header = {"user_angents": random.choice(USER_AGENTS)}
+    session = requests.Session()
+    session.headers = header
+    response = session.get(url)
+    r = re.findall(r'%2ehtm%3fid%3d(.*?)&', response.text)[0]
+    return r
+
+
+def get_json(id):
+    global COOKIES
+    itemId = id
+    sellerId = id
+    url = f"https://h5api.m.taobao.com/h5/mtop.taobao.detail.getdetail/6.0/?jsv=2.5.1&appKey=12574478&t=1556417175449&sign=beffa8acc6f71c7f0030acecbfe84f11&api=mtop.taobao.detail.getdetail&v=6.0&isSec=0&ecode=0&AntiFlood=true&AntiCreep=true&H5Request=true&ttid=2018%40taobao_h5_9.9.9&type=jsonp&dataType=jsonp&data=%7B%22id%22%3A%22{itemId}%22%2C%22itemNumId%22%3A%22{sellerId}%22%2C%22exParams%22%3A%22%7B%5C%22id%5C%22%3A%5C%22{itemId}%5C%22%7D%22%2C%22detail_v%22%3A%228.0.0%22%2C%22utdid%22%3A%221%22%7D"
+    # url = f"https://h5api.m.taobao.com/h5/mtop.taobao.detail.getdetail/6.0/?jsv=2.4.8&api=mtop.taobao.detail.getdetail&v=6.0&dataType=jsonp&AntiCreep=true&type=jsonp&data=%7B%22itemNumId%22%3A%22{itemId}%22%7D"
+    try:
+        header = {"user_angents": random.choice(USER_AGENTS),
+                  "accept-language": "zh-CN,zh;q=0.9",
+                  "accept-Encoding": "gzip, deflate, br",
+                  "DNT": "1",
+                  "upgrade - insecure - requests": "1",
+                  # "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3",
+                  "Origin": "https: // h5.m.taobao.com",
+                  "Referer": f"https://h5.m.taobao.com/awp/core/detail.htm?id={id}",
+                  }
+        header["Cookie"] = COOKIES
+        session = requests.Session()
+        session.headers = header
+        r = session.get(url)
+        if len(r.content) < 1000:
+            list_miss.append(i)
+            print(f'{i}    已下架')
+            ids.replace_one({'id': str(i)}, {'id': str(i), 'status': 'miss'})
+            return None, None, None
+        elif 1000 < len(r.content) < 4000:
+            print("需要验证并重新输入cookies")
+            COOKIES = send_email()
+            return None, None, None
+        else:
+            price = re.findall(r'priceText\\":\\"(.*?)\\', r.text)[0]
+            # ",
+            try:
+                p = re.findall(r'(.*?)\\', price)[0]
+                if p is not None:
+                    price = p
+            except:
+                pass
+
+            salesNum = re.findall(r'sellCount\\":\\"(.*?)\\"', r.text)[0]
+            h5_json = json.loads(r.text)
+            time.sleep(random.uniform(0.5, 1))  # random.uniform(0.4, 0.8)
+            return h5_json, salesNum, price
+    except:
+        list_error.append(itemId)
+
+
+def get_price_title_attribute(h5_json):
+    '''
+    获取价格，标题，属性
+    :param r:
+    :return:
+    '''
+    title = h5_json["data"]["item"]["title"]
+    try:
+        title = title.replace('\u200a', ' ').replace('\u200b', ' ').replace('\u200c', ' ').replace('\xa0', ' ').replace(
+            '\n', ' ').lstrip().rstrip()
+        title = re.sub('[.]', '', title)
+    except:
+        pass
+    try:
+        attribute = {}
+        attribute_json = h5_json["data"]["props"]["groupProps"][0]["基本信息"]
+        for i in attribute_json:
+            i = re.sub('[.]', ' ', str(i))
+            i = ast.literal_eval(i)
+            attribute.update(i)
+    except:
+        attribute = {}
+    return {
+        'title': title,
+        'attribute': attribute
+    }
+
+
+def commentNum(h5_json):
+    '''
+    获取评论数
+    :param itemId:
+    :return:
+    '''
+    try:
+        commentNum = h5_json["data"]["rate"]["totalCount"]
+    except:
+        commentNum = 0
+    return {'commentNum': commentNum}
+
+
+if __name__ == '__main__':
+    # cookies配置的地方  淘宝登陆的cookies str
+    # COOKIES = ""
+    COOKIES = get_cookies_from_redis()  # 每次跑的时候需要更换的cookies
+    list_error = []
+    list_miss = []
+    DATETIME = str(
+        (datetime.datetime.today() - datetime.timedelta(days=time.localtime().tm_wday + 1)).strftime("%Y-%m-%d"))  # 爬取日期会自动配置，日期为上周日
+    print(DATETIME, time.time())
+    db, data, ids = get_connect()  # 获取mongodb表的对象
+
+    error_id = []  # 用于存放爬取失败的id，阔以自己上网看看，有没有这个商品
+    id_len = len([i for i in ids.find({'status': 'todo'})])
+    print(f"总共有{id_len}个item需要爬取")
+    while True:
+        count = ids.find({'status': 'todo'}).count()
+        if count != 0:
+            a = ids.find({'status': 'todo'})[random.randrange(0,count)]
+            i = a["id"]
+            try:
+                if data.find({'id': str(i), 'collection_date': DATETIME}).count() == 0:
+                    # r = crawl(i)
+                    h5_json, salesNum, price = get_json(i)
+                    if h5_json is None:
+                        continue
+                    else:
+                        price_title_attribute = get_price_title_attribute(h5_json)
+                        price_title_attribute.update(commentNum(h5_json))  # 获取评论数
+                        price_title_attribute.update({'soldTotalCount': salesNum})  # 更新
+                        price_title_attribute.update({'confirmGoodsCount': salesNum})
+                        price_title_attribute.update({'price': price})
+                        # -------------------------------------------------
+                        price_title_attribute.update({'id': str(i)})  # 保证id数据是str
+                        price_title_attribute.update({'collection_date': DATETIME})
+                        data.remove({"id": str(i), 'collection_date': DATETIME})  # 防止重复爬取
+                        data.insert_one(price_title_attribute)  # 入库
+                        print(f"{i} success    {count}")
+                else:
+                    print(f"{i} exsited    {count}")
+                ids.update_many({'id': str(i)}, {'$set': {'status': 'done'}})  # 爬取成功，更新状态
+            except Exception as e:
+                # print(e)
+                error_id.append(i)
+                print(f"{i} failed")
+            if len(error_id) >= 10:
+                print('该更换cookies了')
+                break
+            if len(list_miss) >20:
+                break
+        else:
+            break
+
+    save_ids(error_id, 'error_ids.txt')
+    save_ids(list_miss, 'miss_ids.txt')  # 用于本地查看，为啥错误
+
+    print(f"你需要爬取的总数为：{count}")
+    id_len = len([i for i in ids.find({'status': 'todo'})])
+    print(f"待爬取数量：{id_len}")
+    print(list_error)
